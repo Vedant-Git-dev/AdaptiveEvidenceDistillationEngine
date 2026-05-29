@@ -1,0 +1,1 @@
+basically a project which uses langgraph to implement and manage multiple agents and coordination between them. System adapts the workflow dynamically according to user's query and picks the lowest latency and minimal token path to feed only necessary info to LLM. Aim is to reduce token cost and latency of LLM without compromising answer quality.
