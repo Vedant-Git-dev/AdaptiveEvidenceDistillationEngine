@@ -1,1 +1,5 @@
-*.claude*
+*.*cache
+*.vscode
+*__pycache__/
+*data
+*.env
