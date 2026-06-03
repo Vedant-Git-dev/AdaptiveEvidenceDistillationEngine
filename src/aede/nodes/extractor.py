@@ -1,15 +1,16 @@
-"""Evidence Extractor node using Gemini API."""
+"""Evidence Extractor node using Groq API."""
 
 import json
-import os
 import re
 
 from aede.state import AEDEState, Fact
+from aede.utils.groq_client import generate_with_groq
 
 
 def extractor(state: AEDEState) -> AEDEState:
     """
-    Extract factual claims from retrieved documents using Gemini API.
+    Extract factual claims from retrieved documents using Groq API.
+    Optimized for token efficiency: limited docs, capped chunk size, total budget.
     """
     query = state["query"]
     documents = state.get("documents", [])
@@ -17,49 +18,48 @@ def extractor(state: AEDEState) -> AEDEState:
     if not documents:
         return {**state, "facts": [], "workflow_path": state.get("workflow_path", []) + ["extract"]}
 
-    # Build prompt for evidence extraction
-    system_prompt = """You are an evidence extraction assistant. Extract factual claims from documents relevant to the query.
+    # Token optimization: limit docs, chunk size, and total content
+    max_docs = 10
+    max_chunk_chars = 1500
+    max_total_chars = 12000
 
-Respond ONLY with valid JSON:
-{
-  "facts": [
-    {"claim": "...", "quote": "...", "chunk_id": 0},
-    {"claim": "...", "quote": "...", "chunk_id": 1}
-  ]
-}
+    documents = documents[:max_docs]
 
+    # Build prompt with content limits
+    user_prompt_parts = []
+    total_chars = 0
+    for i, doc in enumerate(documents):
+        # Truncate each chunk
+        truncated = doc[:max_chunk_chars] + ("..." if len(doc) > max_chunk_chars else "")
+        doc_with_header = f"\n[Document {i}]:\n{truncated}\n"
+
+        # Check if adding this would exceed budget
+        if total_chars + len(doc_with_header) > max_total_chars:
+            break
+
+        user_prompt_parts.append(doc_with_header)
+        total_chars += len(doc_with_header)
+
+    user_prompt = f"Query: {query}\n\nDocuments:" + "".join(user_prompt_parts)
+
+    system_prompt = """Extract factual claims from documents relevant to the query.
+Respond ONLY with valid JSON: {"facts": [{"claim": "...", "quote": "...", "chunk_id": 0}]}
 If no relevant facts, respond: {"facts": []}"""
 
-    user_prompt = f"Query: {query}\n\nDocuments:\n"
-    for i, doc in enumerate(documents):
-        user_prompt += f"\n[Document {i}]:\n{doc[:2000] if len(doc) > 2000 else doc}\n"
+    # Call Groq API
+    result = generate_with_groq(
+        prompt=user_prompt,
+        system_prompt=system_prompt,
+    )
 
-    # Get API key
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        return {**state, "error": "GEMINI_API_KEY not set", "facts": [], "workflow_path": state.get("workflow_path", []) + ["extract"]}
-
-    # Use official Google Gemini client
-    try:
-        from google import genai
-
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemma-4-31b-it",
-            contents=f"{system_prompt}\n\n{user_prompt}",
-        )
-
-        response_text = response.text
-        usage_metadata = response.usage_metadata
-
-    except Exception as e:
-        return {**state, "error": f"Extraction API error: {str(e)}", "facts": [], "workflow_path": state.get("workflow_path", []) + ["extract"]}
+    response_text = result.get("text", "")
+    usage = result.get("usage", {})
 
     # Update token tracking
     current_usage = state.get("token_usage", {})
-    if usage_metadata:
-        current_usage["extractor_input"] = current_usage.get("extractor_input", 0) + (usage_metadata.prompt_token_count or 0)
-        current_usage["extractor_output"] = current_usage.get("extractor_output", 0) + (usage_metadata.candidates_token_count or 0)
+    if usage:
+        current_usage["extractor_input"] = current_usage.get("extractor_input", 0) + usage.get("prompt_tokens", 0)
+        current_usage["extractor_output"] = current_usage.get("extractor_output", 0) + usage.get("completion_tokens", 0)
 
     # Parse JSON response
     facts: list[Fact] = []
@@ -84,5 +84,5 @@ If no relevant facts, respond: {"facts": []}"""
         "facts": facts,
         "token_usage": current_usage,
         "workflow_path": state.get("workflow_path", []) + ["extract"],
-        "error": None,
+        "error": result.get("error") if "error" in result else None,
     }

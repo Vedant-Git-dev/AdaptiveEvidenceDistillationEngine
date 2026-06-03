@@ -22,13 +22,16 @@ load_env()
 
 
 class ModelConfig(BaseModel):
-    """Model configuration using Gemini API exclusively."""
+    """Model configuration - Groq for pipeline, Gemini for final reasoner."""
 
-    # Gemini API key (single key for all models)
+    # Gemini API key (for final reasoner)
     gemini_api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
 
-    # Gemma model via Gemini API (flash thinking for cheaper ops)
-    gemma_model: str = "gemma-4-31b-it"
+    # Groq API key (for extractor, analyzer, compressor)
+    groq_api_key: str = Field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
+
+    # Pipeline model via Groq (extractor, analyzer, compressor)
+    pipeline_model: str = "qwen/qwen3-32b"
 
     # Gemini model for final reasoner
     gemini_reasoner_model: str = "gemini-2.5-flash"
@@ -47,8 +50,8 @@ class RetrievalConfig(BaseModel):
 
     # Retrieval settings
     initial_k: int = 4
-    max_k: int = 32
-    binary_growth: bool = True  # k=4→8→16→32, not k+=4
+    max_k: int = 16
+    binary_growth: bool = True  # k=4→8→16, not k+=4
 
 
 class PipelineConfig(BaseModel):

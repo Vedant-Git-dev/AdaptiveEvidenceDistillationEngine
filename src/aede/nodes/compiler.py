@@ -9,10 +9,15 @@ from aede.state import AEDEState
 DEFAULT_COVERAGE_TARGET = 0.8
 DEFAULT_REDUNDANCY_THRESHOLD = 0.4
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
-DEFAULT_MAX_K = 32
+DEFAULT_MAX_K = 16
+
+# Direct answer thresholds: skip compressor if evidence is good enough
+DIRECT_ANSWER_COVERAGE = 0.85
+DIRECT_ANSWER_CONFIDENCE = 0.7
+DIRECT_ANSWER_REDUNDANCY = 0.2
 
 
-Decision = Literal["retrieve_more", "compress", "answer", "max_retrieval_reached"]
+Decision = Literal["retrieve_more", "compress", "answer", "max_retrieval_reached", "direct_answer"]
 
 
 def compiler_decision(
@@ -66,7 +71,13 @@ def compiler_decision(
     if confidence < confidence_threshold:
         return "retrieve_more"
 
-    # Case 5: Ready to answer
+    # Case 5: Ready to answer - check if we can bypass compressor
+    # If coverage and confidence are high, and redundancy is low, skip compression
+    if (coverage >= DIRECT_ANSWER_COVERAGE and
+        confidence >= DIRECT_ANSWER_CONFIDENCE and
+        redundancy <= DIRECT_ANSWER_REDUNDANCY):
+        return "direct_answer"
+
     return "answer"
 
 

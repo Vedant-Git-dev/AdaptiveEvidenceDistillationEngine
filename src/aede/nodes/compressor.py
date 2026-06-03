@@ -1,16 +1,17 @@
-"""Evidence Compressor node using Gemini API."""
+"""Evidence Compressor node using Groq API."""
 
 import json
-import os
 import re
 
 from aede.state import AEDEState
+from aede.utils.groq_client import generate_with_groq
 
 
 def evidence_compressor(state: AEDEState) -> AEDEState:
     """
     Compress extracted facts to reduce redundancy while preserving unique information.
-    Uses Gemini API. Target: 10x reduction in evidence count.
+    Uses Groq API. Target: 10x reduction in evidence count.
+    Token-optimized: limits facts, truncates claims/quotes, caps total content.
     """
     query = state["query"]
     facts = state.get("facts", [])
@@ -18,41 +19,42 @@ def evidence_compressor(state: AEDEState) -> AEDEState:
     if not facts:
         return {**state, "compressed_evidence": [], "workflow_path": state.get("workflow_path", []) + ["compress"]}
 
-    facts_text = "\n".join([f"- Claim: {f['claim']}\n  Quote: {f['quote']}\n  Source chunk: {f['chunk_id']}" for f in facts])
+    # Token optimization: limit facts and truncate
+    max_facts = 40
+    facts = facts[:max_facts]
 
-    system_prompt = """You are an evidence compressor. Merge redundant claims and preserve unique information.
+    facts_text_parts = []
+    total_chars = 0
+    max_chars = 6000
 
-Target: 10x reduction. Return ONLY valid JSON:
-{"compressed_evidence": ["unique evidence 1", "unique evidence 2"]}"""
+    for f in facts:
+        fact_str = f"- Claim: {f['claim'][:150]}\n  Quote: {f['quote'][:100] if f['quote'] else ''}\n"
+        if total_chars + len(fact_str) > max_chars:
+            break
+        facts_text_parts.append(fact_str)
+        total_chars += len(fact_str)
 
-    user_prompt = f"Query: {query}\n\nFacts:\n{facts_text}\n\nMerge redundant claims keeping unique information."
+    facts_text = "".join(facts_text_parts)
 
-    # Get API key
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        return {**state, "compressed_evidence": _simple_compress(facts, query), "workflow_path": state.get("workflow_path", []) + ["compress"]}
+    system_prompt = """Merge redundant claims, preserve unique info. Return ONLY valid JSON:
+{"compressed_evidence": ["evidence 1", "evidence 2"]}"""
 
-    # Use official Google Gemini client
-    try:
-        from google import genai
+    user_prompt = f"Query: {query}\n\nFacts:\n{facts_text}\n\n10x reduction."
 
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemma-4-31b-it",
-            contents=f"{system_prompt}\n\n{user_prompt}",
-        )
+    # Call Groq API
+    result = generate_with_groq(
+        prompt=user_prompt,
+        system_prompt=system_prompt,
+    )
 
-        response_text = response.text
-        usage_metadata = response.usage_metadata
-
-    except Exception as e:
-        return {**state, "compressed_evidence": _simple_compress(facts, query), "error": str(e), "workflow_path": state.get("workflow_path", []) + ["compress"]}
+    response_text = result.get("text", "")
+    usage = result.get("usage", {})
 
     # Update token tracking
     current_usage = state.get("token_usage", {})
-    if usage_metadata:
-        current_usage["compressor_input"] = current_usage.get("compressor_input", 0) + (usage_metadata.prompt_token_count or 0)
-        current_usage["compressor_output"] = current_usage.get("compressor_output", 0) + (usage_metadata.candidates_token_count or 0)
+    if usage:
+        current_usage["compressor_input"] = current_usage.get("compressor_input", 0) + usage.get("prompt_tokens", 0)
+        current_usage["compressor_output"] = current_usage.get("compressor_output", 0) + usage.get("completion_tokens", 0)
 
     # Parse JSON response
     compressed_evidence = []
@@ -61,7 +63,7 @@ Target: 10x reduction. Return ONLY valid JSON:
         if "compressed_evidence" in parsed:
             compressed_evidence = [str(e) for e in parsed["compressed_evidence"]]
     except json.JSONDecodeError:
-        json_match = re.search(r"\{[^}]*\"compressed_evidence\"\s*:\s*(\[[^\]]*\])", response_text, re.DOTALL)
+        json_match = re.search(r"\{[^}]*\"compressed_evidence\"\s*:\s*(\[[^\]]*)\}", response_text, re.DOTALL)
         if json_match:
             try:
                 parsed = json.loads(json_match.group())
@@ -77,7 +79,7 @@ Target: 10x reduction. Return ONLY valid JSON:
         "compressed_evidence": compressed_evidence,
         "token_usage": current_usage,
         "workflow_path": state.get("workflow_path", []) + ["compress"],
-        "error": None,
+        "error": result.get("error") if "error" in result else None,
     }
 
 

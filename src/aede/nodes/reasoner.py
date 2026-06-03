@@ -9,6 +9,7 @@ def final_reasoner(state: AEDEState) -> AEDEState:
     """
     Generate final answer using compressed evidence with Gemini API.
     Targets 300-800 tokens for concise, evidence-based answers.
+    Token-optimized: limits evidence items and truncates each.
     """
     query = state["query"]
     compressed_evidence = state.get("compressed_evidence", [])
@@ -17,9 +18,15 @@ def final_reasoner(state: AEDEState) -> AEDEState:
     if not compressed_evidence:
         facts = state.get("facts", [])
         if facts:
-            compressed_evidence = [f"{f['claim']} - \"{f['quote']}\"" if f["quote"] else f["claim"] for f in facts[:20]]
+            compressed_evidence = [f"{f['claim']} - \"{f['quote']}\"" if f["quote"] else f["claim"] for f in facts[:15]]
         else:
             return {**state, "answer": "Insufficient evidence to answer the query.", "workflow_path": state.get("workflow_path", []) + ["reason"]}
+
+    # Token optimization: limit evidence items and cap each item's length
+    max_evidence = 20
+    max_chars_per_item = 500
+    compressed_evidence = compressed_evidence[:max_evidence]
+    compressed_evidence = [e[:max_chars_per_item] + ("..." if len(e) > max_chars_per_item else "") for e in compressed_evidence]
 
     evidence_text = "\n".join([f"- {e}" for e in compressed_evidence])
 

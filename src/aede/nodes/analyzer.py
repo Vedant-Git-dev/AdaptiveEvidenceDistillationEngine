@@ -1,15 +1,15 @@
-"""Evidence Quality Analyzer node using Gemini API."""
+"""Evidence Quality Analyzer node using Groq API."""
 
 import json
-import os
 import re
 
 from aede.state import AEDEState
+from aede.utils.groq_client import generate_with_groq
 
 
 def analyzer(state: AEDEState) -> AEDEState:
     """
-    Analyze the quality of extracted evidence using Gemini API.
+    Analyze the quality of extracted evidence using Groq API.
     """
     query = state["query"]
     query_core_concepts = state.get("query_core_concepts", [])
@@ -18,52 +18,42 @@ def analyzer(state: AEDEState) -> AEDEState:
     if not facts:
         return {**state, "answered_parts": [], "missing_parts": [], "missing_parts_core": [], "coverage": 0.0, "redundancy": 0.0, "confidence": 0.0, "workflow_path": state.get("workflow_path", []) + ["analyze"]}
 
-    # Build prompt
-    system_prompt = """You are an evidence quality analyst. Evaluate if extracted facts answer the query.
+    # Build prompt with token limits
+    max_facts = 50
+    facts = facts[:max_facts]
 
-Respond ONLY with valid JSON:
-{
-  "answered_parts": ["part1"],
-  "missing_parts": ["missing part"],
-  "coverage": 0.85,
-  "redundancy": 0.2,
-  "confidence": 0.8
-}"""
+    facts_text_parts = []
+    total_chars = 0
+    max_chars = 8000
 
-    facts_text = "\n".join([f"- Claim: {f['claim']}\n  Quote: {f['quote']}\n  Source chunk: {f['chunk_id']}" for f in facts])
-    user_prompt = f"""Query: {query}
+    for f in facts:
+        fact_str = f"Claim: {f['claim'][:200]}\n  Quote: {f['quote'][:150] if f['quote'] else ''}\n"
+        if total_chars + len(fact_str) > max_chars:
+            break
+        facts_text_parts.append(fact_str)
+        total_chars += len(fact_str)
 
-Extracted Facts:
-{facts_text}
+    facts_text = "".join(facts_text_parts)
 
-Analyze the evidence quality."""
+    system_prompt = """Evaluate if facts answer the query. JSON only:
+{"answered_parts": [], "missing_parts": [], "coverage": 0.0, "redundancy": 0.0, "confidence": 0.0}"""
 
-    # Get API key
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        return {**state, "error": "GEMINI_API_KEY not set", "workflow_path": state.get("workflow_path", []) + ["analyze"]}
+    user_prompt = f"Query: {query}\n\nFacts:\n{facts_text}\n\nAnalyze quality."
 
-    # Use official Google Gemini client
-    try:
-        from google import genai
+    # Call Groq API
+    result = generate_with_groq(
+        prompt=user_prompt,
+        system_prompt=system_prompt,
+    )
 
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemma-4-31b-it",
-            contents=f"{system_prompt}\n\n{user_prompt}",
-        )
-
-        response_text = response.text
-        usage_metadata = response.usage_metadata
-
-    except Exception as e:
-        return {**state, "error": f"Analyzer API error: {str(e)}", "workflow_path": state.get("workflow_path", []) + ["analyze"]}
+    response_text = result.get("text", "")
+    usage = result.get("usage", {})
 
     # Update token tracking
     current_usage = state.get("token_usage", {})
-    if usage_metadata:
-        current_usage["analyzer_input"] = current_usage.get("analyzer_input", 0) + (usage_metadata.prompt_token_count or 0)
-        current_usage["analyzer_output"] = current_usage.get("analyzer_output", 0) + (usage_metadata.candidates_token_count or 0)
+    if usage:
+        current_usage["analyzer_input"] = current_usage.get("analyzer_input", 0) + usage.get("prompt_tokens", 0)
+        current_usage["analyzer_output"] = current_usage.get("analyzer_output", 0) + usage.get("completion_tokens", 0)
 
     # Parse response
     answered_parts = []
@@ -105,7 +95,7 @@ Analyze the evidence quality."""
         "confidence": confidence,
         "token_usage": current_usage,
         "workflow_path": state.get("workflow_path", []) + ["analyze"],
-        "error": None,
+        "error": result.get("error") if "error" in result else None,
     }
 
 

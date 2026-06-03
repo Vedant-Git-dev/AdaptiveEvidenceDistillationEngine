@@ -80,7 +80,8 @@ def build_graph() -> StateGraph:
         {
             "retrieve_more": "retrieve_more",
             "compress": "compress",
-            "answer": "reason",
+            "answer": "compress",  # go through compression before reasoning
+            "direct_answer": "reason",  # bypass compression, go straight to reasoner
             "max_retrieval_reached": "reason",
         },
     )
