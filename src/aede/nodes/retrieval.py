@@ -49,7 +49,7 @@ def focused_retriever(state: AEDEState) -> AEDEState:
     Returns:
         Updated state with documents and current_top_k
     """
-    # query = state["query"]
+    query = state["query"]
     k = 4  # Default to 4 if not set
 
     # Get documents from vector store
@@ -57,7 +57,7 @@ def focused_retriever(state: AEDEState) -> AEDEState:
 
     # Query for similar documents
     results = collection.query(
-        query_texts=["What are the advantages and disadvantages of machine learning?"],  
+        query_texts=[query],  
         n_results=k,
         include=["documents", "metadatas", "distances"],
     )
@@ -65,13 +65,13 @@ def focused_retriever(state: AEDEState) -> AEDEState:
     documents = results.get("documents", [[]])[0]
 
     # Build workflow path entry
-    # workflow_path = state.get("workflow_path", [])
-    # workflow_path = workflow_path + ["focused_retriever"]
+    workflow_path = state.get("workflow_path", [])
+    workflow_path = workflow_path + ["focused_retriever"]
 
     return {
         "documents": documents,
         "current_top_k": k,
-        # "workflow_path": workflow_path,
+        "workflow_path": workflow_path
     }
 
 

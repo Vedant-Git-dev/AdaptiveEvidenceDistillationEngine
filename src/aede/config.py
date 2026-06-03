@@ -31,7 +31,7 @@ class ModelConfig(BaseModel):
     groq_api_key: str = Field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
 
     # Pipeline model via Groq (extractor, analyzer, compressor)
-    pipeline_model: str = "qwen/qwen3-32b"
+    pipeline_model: str = "llama-3.3-70b-versatile"  
 
     # Gemini model for final reasoner
     gemini_reasoner_model: str = "gemini-2.5-flash"
