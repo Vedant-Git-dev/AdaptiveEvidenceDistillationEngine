@@ -384,3 +384,81 @@ class TestPerformanceMetrics:
         # Should converge in at most 4 retrievals after initial
         iterations = len(coverage_history)
         assert iterations <= 6, "Should converge in <= 5 retrievals (including initial)"
+
+
+class TestSmallReasoner:
+    """Tests for the small-model (Groq) reasoner node."""
+
+    def _get_module(self):
+        """Return the actual small_reasoner module (not the function re-exported
+        by aede.nodes.__init__, which shadows the submodule attribute)."""
+        import importlib
+        return importlib.import_module("aede.nodes.small_reasoner")
+
+    def test_small_reasoner_uses_compressed_evidence(self):
+        small_reasoner_module = self._get_module()
+
+        state: AEDEState = {
+            "query": "What was Q3 revenue?",
+            "facts": [],
+            "compressed_evidence": ["Q3 revenue was $50M", "Up from $43M in Q2"],
+            "required_reasoning": "none",
+            "workflow_path": ["start", "analyze", "compile(direct_answer)"],
+            "token_usage": {},
+        }
+        with patch.object(
+            small_reasoner_module,
+            "generate_with_groq",
+            return_value={"text": "Q3 revenue was $50M.", "usage": {"prompt_tokens": 30, "completion_tokens": 8}},
+        ) as mock_call:
+            result = small_reasoner_module.small_reasoner(state)
+
+        assert result["answer"] == "Q3 revenue was $50M."
+        assert "small_reasoner" in result["workflow_path"]
+        assert result["token_usage"]["small_reasoner_input"] == 30
+        assert result["token_usage"]["small_reasoner_output"] == 8
+        # Verify we passed compressed evidence, not facts
+        call_kwargs = mock_call.call_args.kwargs
+        assert "Q3 revenue was $50M" in call_kwargs["prompt"]
+
+    def test_small_reasoner_falls_back_to_facts(self):
+        small_reasoner_module = self._get_module()
+
+        state: AEDEState = {
+            "query": "What was Q3 revenue?",
+            "facts": [Fact(claim="Q3 revenue $50M", quote="$50M", chunk_id=0)],
+            "compressed_evidence": [],
+            "required_reasoning": "none",
+            "workflow_path": ["start"],
+            "token_usage": {},
+        }
+        with patch.object(
+            small_reasoner_module,
+            "generate_with_groq",
+            return_value={"text": "ok", "usage": {"prompt_tokens": 1, "completion_tokens": 1}},
+        ) as mock_call:
+            small_reasoner_module.small_reasoner(state)
+        # facts path should include the claim text
+        assert "Q3 revenue $50M" in mock_call.call_args.kwargs["prompt"]
+
+    def test_small_reasoner_handles_api_failure(self):
+        small_reasoner_module = self._get_module()
+
+        state: AEDEState = {
+            "query": "Q?",
+            "facts": [Fact(claim="answer claim", quote="aq", chunk_id=0)],
+            "compressed_evidence": [],
+            "required_reasoning": "light",
+            "workflow_path": ["start"],
+            "token_usage": {},
+        }
+        # Empty text simulates a missing API key / failed call
+        with patch.object(
+            small_reasoner_module,
+            "generate_with_groq",
+            return_value={"text": "", "usage": {}},
+        ):
+            result = small_reasoner_module.small_reasoner(state)
+        # Should still produce a non-empty answer (fallback)
+        assert result["answer"]
+        assert "evidence" in result["answer"].lower() or "answer" in result["answer"].lower()

@@ -8,6 +8,7 @@ from aede.nodes.compressor import evidence_compressor
 from aede.nodes.retriever_more import retrieve_more
 from aede.nodes.reasoner import final_reasoner
 from aede.nodes.concept_extractor import extract_core_concepts
+from aede.nodes.small_reasoner import small_reasoner
 
 __all__ = [
     "focused_retriever",
@@ -18,4 +19,5 @@ __all__ = [
     "retrieve_more",
     "final_reasoner",
     "extract_core_concepts",
+    "small_reasoner",
 ]

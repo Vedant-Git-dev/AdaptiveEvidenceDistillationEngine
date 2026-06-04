@@ -321,3 +321,108 @@ class TestAnalyzerEdgeCases:
 
                 result = analyzer(state)
                 assert "answered_parts" in result
+
+
+class TestAnalyzerRoutingSignals:
+    """Tests for the new routing fields returned by the analyzer."""
+
+    def _run_with_groq_mock(self, response_text: str) -> AEDEState:
+        """Run analyzer with a mocked Groq response and one fact.
+
+        Patch the symbol at the import site used by the analyzer
+        (`aede.nodes.analyzer.generate_with_groq`), not the source module.
+        Use importlib because aede.nodes.__init__ re-exports the function
+        `analyzer`, which would otherwise shadow the submodule attribute.
+        """
+        import importlib
+        analyzer_module = importlib.import_module("aede.nodes.analyzer")
+
+        state: AEDEState = {
+            "query": "What was Q3 revenue?",
+            "facts": [Fact(claim="Q3 revenue was $50M", quote="$50M", chunk_id=0)],
+            "query_core_concepts": ["Q3", "revenue"],
+            "workflow_path": ["start"],
+            "token_usage": {},
+        }
+        with patch.object(
+            analyzer_module,
+            "generate_with_groq",
+            return_value={"text": response_text, "usage": {"prompt_tokens": 10, "completion_tokens": 5}},
+        ):
+            return analyzer(state)
+
+    def test_parses_routing_signals_none(self):
+        result = self._run_with_groq_mock(json.dumps({
+            "answered_parts": ["Q3 revenue"],
+            "missing_parts": [],
+            "coverage": 0.95,
+            "redundancy": 0.1,
+            "confidence": 0.9,
+            "direct_answer_possible": True,
+            "required_reasoning": "none",
+        }))
+        assert result["direct_answer_possible"] is True
+        assert result["required_reasoning"] == "none"
+
+    def test_parses_routing_signals_light(self):
+        result = self._run_with_groq_mock(json.dumps({
+            "answered_parts": ["growth", "Q3"],
+            "missing_parts": [],
+            "coverage": 0.85,
+            "redundancy": 0.2,
+            "confidence": 0.8,
+            "direct_answer_possible": False,
+            "required_reasoning": "light",
+        }))
+        assert result["required_reasoning"] == "light"
+        assert result["direct_answer_possible"] is False
+
+    def test_parses_routing_signals_deep(self):
+        result = self._run_with_groq_mock(json.dumps({
+            "answered_parts": ["revenue"],
+            "missing_parts": ["causes", "projections"],
+            "coverage": 0.5,
+            "redundancy": 0.2,
+            "confidence": 0.6,
+            "direct_answer_possible": False,
+            "required_reasoning": "deep",
+        }))
+        assert result["required_reasoning"] == "deep"
+        assert result["direct_answer_possible"] is False
+
+    def test_defaults_to_deep_when_routing_fields_missing(self):
+        """If the analyzer LLM omits the new fields, route conservatively."""
+        result = self._run_with_groq_mock(json.dumps({
+            "answered_parts": ["a"],
+            "missing_parts": [],
+            "coverage": 0.9,
+            "redundancy": 0.1,
+            "confidence": 0.9,
+        }))
+        assert result["required_reasoning"] == "deep"
+        assert result["direct_answer_possible"] is False
+
+    def test_invalid_reasoning_value_falls_back_to_deep(self):
+        result = self._run_with_groq_mock(json.dumps({
+            "answered_parts": ["a"],
+            "missing_parts": [],
+            "coverage": 0.9,
+            "redundancy": 0.1,
+            "confidence": 0.9,
+            "required_reasoning": "medium",  # not in the allowed set
+        }))
+        assert result["required_reasoning"] == "deep"
+
+    def test_empty_facts_returns_conservative_routing(self):
+        """Empty facts -> no API call; defaults should be deep/false."""
+        state: AEDEState = {
+            "query": "anything",
+            "facts": [],
+            "query_core_concepts": [],
+            "workflow_path": ["start"],
+            "token_usage": {},
+        }
+        result = analyzer(state)
+        assert result["required_reasoning"] == "deep"
+        assert result["direct_answer_possible"] is False
+        assert result["coverage"] == 0.0

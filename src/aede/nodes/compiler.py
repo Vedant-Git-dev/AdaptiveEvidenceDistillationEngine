@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from aede.state import AEDEState
+from aede.state import AEDEState, ReasoningDepth
 
 
 # Thresholds from config
@@ -17,7 +17,15 @@ DIRECT_ANSWER_CONFIDENCE = 0.7
 DIRECT_ANSWER_REDUNDANCY = 0.2
 
 
-Decision = Literal["retrieve_more", "compress", "answer", "max_retrieval_reached", "direct_answer"]
+Decision = Literal[
+    "retrieve_more",
+    "compress",
+    "answer",
+    "max_retrieval_reached",
+    "direct_answer",
+    "llama_with_compress",
+    "deep_reasoning",
+]
 
 
 def compiler_decision(
@@ -35,7 +43,12 @@ def compiler_decision(
     2. If coverage < target AND missing_parts_core is non-empty -> retrieve more
     3. If redundancy > threshold -> compress (deduplicate)
     4. If confidence < threshold -> retrieve more (low confidence signal)
-    5. Else -> answer
+    5. If required_reasoning == "deep" -> deep_reasoning (compressor + Gemini)
+    6. If required_reasoning in {"none","light"} and quality signals are good
+       enough:
+         - "none"  -> direct_answer (llama, skip compressor)
+         - "light" -> llama_with_compress (compressor + llama)
+    7. Else -> answer (legacy Gemini path)
 
     Args:
         state: Current AEDE state
@@ -45,7 +58,7 @@ def compiler_decision(
         max_k: Maximum retrieval count (default: 32)
 
     Returns:
-        Decision: One of "retrieve_more", "compress", "answer", "max_retrieval_reached"
+        Decision: One of the Decision literals.
     """
     coverage = state.get("coverage", 0.0)
     redundancy = state.get("redundancy", 0.0)
@@ -53,6 +66,7 @@ def compiler_decision(
     missing_parts_core = state.get("missing_parts_core", [])
     max_reached = state.get("max_retrieval_reached", False)
     current_top_k = state.get("current_top_k", 4)
+    required_reasoning: ReasoningDepth = state.get("required_reasoning", "deep")
 
     # Case 1: At max retrieval - signal it and proceed to answer
     # This allows answering even with imperfect coverage
@@ -71,13 +85,21 @@ def compiler_decision(
     if confidence < confidence_threshold:
         return "retrieve_more"
 
-    # Case 5: Ready to answer - check if we can bypass compressor
-    # If coverage and confidence are high, and redundancy is low, skip compression
-    if (coverage >= DIRECT_ANSWER_COVERAGE and
-        confidence >= DIRECT_ANSWER_CONFIDENCE and
-        redundancy <= DIRECT_ANSWER_REDUNDANCY):
+    # Case 5: Routing based on reasoning depth (analyzer signal).
+    # "deep" -> compressor + large model (Gemini).
+    if required_reasoning == "deep":
+        return "deep_reasoning"
+
+    # Case 6: "none" or "light" can go to the small (llama) model,
+    # provided the evidence quality itself is good enough to skip
+    # the compressor ("none") or only needs a light compression pass ("light").
+    if required_reasoning == "none":
         return "direct_answer"
 
+    if required_reasoning == "light":
+        return "llama_with_compress"
+
+    # Case 7: Fallback - default to legacy "answer" (Gemini).
     return "answer"
 
 

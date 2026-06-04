@@ -130,12 +130,13 @@ class TestCompilerCompress:
             "confidence": 0.8,
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",  # opt in to direct-answer path
         }
 
         decision = compiler_decision(state)
 
-        # Should go to answer since coverage is good and redundancy is low
-        assert decision == "answer"
+        # Low redundancy + easy question -> direct_answer (skip compressor)
+        assert decision == "direct_answer"
 
     def test_compression_takes_priority_over_low_confidence(self):
         """Test that high redundancy is handled before low confidence."""
@@ -163,7 +164,8 @@ class TestCompilerAnswer:
         CRITICAL: Test that compiler decides to answer when all conditions are met.
 
         When coverage >= 0.8 AND no missing core concepts AND redundancy <= 0.4
-        AND confidence >= 0.5, should answer.
+        AND confidence >= 0.5 AND the analyzer marked the question as easy,
+        the compiler routes via the direct-answer (llama) path.
         """
         state: AEDEState = {
             "query": "Why did revenue grow?",
@@ -174,12 +176,13 @@ class TestCompilerAnswer:
             "confidence": 0.8,  # Good confidence
             "missing_parts_core": [],  # No missing core concepts
             "max_retrieval_reached": False,
+            "required_reasoning": "none",  # analyzer says: no synthesis needed
         }
 
         decision = compiler_decision(state)
 
-        assert decision == "answer", (
-            f"Expected 'answer' when all conditions met: "
+        assert decision == "direct_answer", (
+            f"Expected 'direct_answer' when all conditions met and question is easy: "
             f"coverage={0.85}, redundancy={0.3}, confidence={0.8}, "
             f"missing_core=0. Got '{decision}'"
         )
@@ -194,10 +197,11 @@ class TestCompilerAnswer:
             "confidence": 0.5,  # At threshold - should pass
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",
         }
 
         decision = compiler_decision(state)
-        assert decision == "answer"
+        assert decision == "direct_answer"
 
     def test_answer_with_boundary_coverage(self):
         """Test answer at coverage threshold boundary."""
@@ -209,10 +213,11 @@ class TestCompilerAnswer:
             "confidence": 0.8,
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",
         }
 
         decision = compiler_decision(state)
-        assert decision == "answer"
+        assert decision == "direct_answer"
 
     def test_answer_with_boundary_redundancy(self):
         """Test answer at redundancy threshold boundary."""
@@ -224,10 +229,11 @@ class TestCompilerAnswer:
             "confidence": 0.8,
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",
         }
 
         decision = compiler_decision(state)
-        assert decision == "answer"
+        assert decision == "direct_answer"
 
 
 class TestCompilerMaxRetrievalEdgeCase:
@@ -349,13 +355,14 @@ class TestCompilerEdgeCases:
             "confidence": 0.7,
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",
         }
 
         # Use higher coverage target
         decision = compiler_decision(state, coverage_target=0.6)
 
-        # With coverage=0.65 >= 0.6 target, should proceed
-        assert decision in ["compress", "answer"]
+        # With coverage=0.65 >= 0.6 target and easy question -> direct_answer
+        assert decision in ["direct_answer", "compress", "llama_with_compress", "deep_reasoning"]
 
     def test_workflow_compiler_updates_path(self):
         """Test that workflow_compiler node updates path."""
@@ -446,15 +453,16 @@ class TestCustomThresholdsIntegration:
             "confidence": 0.9,
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",
         }
 
         # Default target is 0.8, so coverage=0.75 should trigger retrieve
         decision_default = compiler_decision(state)
         assert decision_default == "retrieve_more"
 
-        # With lower target=0.5, coverage=0.75 should pass
+        # With lower target=0.5, coverage=0.75 should pass and question is easy
         decision_strict = compiler_decision(state, coverage_target=0.5)
-        assert decision_strict == "answer"
+        assert decision_strict == "direct_answer"
 
     def test_permissive_redundancy_threshold(self):
         """Test with permissive redundancy threshold."""
@@ -466,12 +474,109 @@ class TestCustomThresholdsIntegration:
             "confidence": 0.9,
             "missing_parts_core": [],
             "max_retrieval_reached": False,
+            "required_reasoning": "none",
         }
 
         # Default threshold is 0.4, so redundancy=0.45 should compress
         decision_default = compiler_decision(state)
         assert decision_default == "compress"
 
-        # With higher threshold=0.6, redundancy=0.45 should pass
+        # With higher threshold=0.6, redundancy=0.45 should pass and the
+        # question is easy -> direct_answer
         decision_permissive = compiler_decision(state, redundancy_threshold=0.6)
-        assert decision_permissive == "answer"
+        assert decision_permissive == "direct_answer"
+
+
+class TestCompilerRoutingSignals:
+    """Tests for the analyzer-driven routing decisions."""
+
+    def _ready_state(self, **overrides) -> AEDEState:
+        """Build a state that has cleared all the existing thresholds:
+        coverage >= target, no missing core, redundancy <= threshold,
+        confidence >= threshold, not at max. Caller can then tweak
+        required_reasoning and direct_answer_possible to drive the new
+        branches.
+        """
+        base: AEDEState = {
+            "query": "Why did revenue grow?",
+            "query_core_concepts": ["revenue", "growth"],
+            "current_top_k": 8,
+            "documents": ["d1"],
+            "facts": [],
+            "answered_parts": ["revenue growth"],
+            "missing_parts": [],
+            "missing_parts_core": [],
+            "coverage": 0.85,
+            "redundancy": 0.2,
+            "confidence": 0.8,
+            "max_retrieval_reached": False,
+            "required_reasoning": "deep",
+            "direct_answer_possible": False,
+        }
+        base.update(overrides)
+        return base
+
+    def test_routes_to_deep_reasoning_for_deep(self):
+        decision = compiler_decision(self._ready_state(required_reasoning="deep"))
+        assert decision == "deep_reasoning"
+
+    def test_routes_to_direct_answer_for_none(self):
+        decision = compiler_decision(self._ready_state(required_reasoning="none"))
+        assert decision == "direct_answer"
+
+    def test_routes_to_llama_with_compress_for_light(self):
+        decision = compiler_decision(self._ready_state(required_reasoning="light"))
+        assert decision == "llama_with_compress"
+
+    def test_default_routes_to_deep_when_routing_field_missing(self):
+        """Old analyzer output (no required_reasoning) -> conservative deep path."""
+        state = self._ready_state()
+        del state["required_reasoning"]
+        decision = compiler_decision(state)
+        assert decision == "deep_reasoning"
+
+    def test_deep_reasoning_overrides_low_redundancy(self):
+        """Even with low redundancy, deep reasoning should go to Gemini path."""
+        state = self._ready_state(
+            redundancy=0.1,
+            required_reasoning="deep",
+        )
+        decision = compiler_decision(state)
+        # deep_reasoning should win over the no-redundancy case
+        assert decision == "deep_reasoning"
+
+    def test_retrieve_more_beats_routing(self):
+        """Low coverage still triggers retrieve_more even if reasoning is none."""
+        state = self._ready_state(
+            coverage=0.5,
+            required_reasoning="none",
+        )
+        decision = compiler_decision(state)
+        assert decision == "retrieve_more"
+
+    def test_high_redundancy_beats_routing(self):
+        """High redundancy still triggers compress even if reasoning is none."""
+        state = self._ready_state(
+            redundancy=0.6,
+            required_reasoning="none",
+        )
+        decision = compiler_decision(state)
+        assert decision == "compress"
+
+    def test_low_confidence_beats_routing(self):
+        """Low confidence still triggers retrieve_more even if reasoning is light."""
+        state = self._ready_state(
+            confidence=0.3,
+            required_reasoning="light",
+        )
+        decision = compiler_decision(state)
+        assert decision == "retrieve_more"
+
+    def test_max_retrieval_overrides_routing(self):
+        """Max retrieval signal wins over reasoning depth."""
+        state = self._ready_state(
+            max_retrieval_reached=True,
+            required_reasoning="none",
+        )
+        decision = compiler_decision(state)
+        assert decision == "max_retrieval_reached"

@@ -16,6 +16,7 @@ from aede.nodes import (
     evidence_compressor,
     retrieve_more,
     final_reasoner,
+    small_reasoner,
 )
 
 
@@ -23,16 +24,12 @@ def _route_from_compiler(state: AEDEState) -> str:
     """
     Route from compiler based on decision.
 
-    Returns:
-        "retrieve_more" -> continue to retrieve_more node
-        "compress" -> continue to compressor node
-        "answer" -> go directly to reasoner
-        "max_retrieval_reached" -> go directly to reasoner
+    Returns one of the Decision literals. The conditional edge map in
+    build_graph() translates each literal to a destination node.
     """
     from aede.nodes.compiler import compiler_decision
 
-    decision = compiler_decision(state)
-    return decision
+    return compiler_decision(state)
 
 
 def build_graph() -> StateGraph:
@@ -46,9 +43,17 @@ def build_graph() -> StateGraph:
            |
            +-- "retrieve_more" -> retrieve_more -> evidence_extractor (loop)
            |
-           +-- "compress" -> evidence_compressor -> final_reasoner
+           +-- "compress" -> evidence_compressor -> final_reasoner (Gemini)
            |
-           +-- "answer" / "max_retrieval_reached" -> final_reasoner -> END
+           +-- "direct_answer" -> small_reasoner (llama, no compression)
+           |
+           +-- "llama_with_compress" -> evidence_compressor -> small_reasoner
+           |
+           +-- "deep_reasoning" -> evidence_compressor -> final_reasoner
+           |
+           +-- "answer" -> evidence_compressor -> final_reasoner
+           |
+           +-- "max_retrieval_reached" -> final_reasoner -> END
 
     Returns:
         Compiled StateGraph ready to run
@@ -65,6 +70,7 @@ def build_graph() -> StateGraph:
     graph.add_node("retrieve_more", retrieve_more)
     graph.add_node("compress", evidence_compressor)
     graph.add_node("reason", final_reasoner)
+    graph.add_node("small_reasoner", small_reasoner)
 
     # Define edges
     graph.set_entry_point("extract_concepts")
@@ -80,8 +86,15 @@ def build_graph() -> StateGraph:
         {
             "retrieve_more": "retrieve_more",
             "compress": "compress",
-            "answer": "compress",  # go through compression before reasoning
-            "direct_answer": "reason",  # bypass compression, go straight to reasoner
+            # Both "answer" (legacy fallback) and "deep_reasoning" (new explicit
+            # deep path) send the evidence through the compressor on its way
+            # to the large model (Gemini). The decision literal is preserved
+            # in workflow_path for observability.
+            "answer": "compress",
+            "deep_reasoning": "compress",
+            # New routing based on required_reasoning:
+            "direct_answer": "small_reasoner",      # skip compressor -> llama
+            "llama_with_compress": "compress",       # compressor -> llama
             "max_retrieval_reached": "reason",
         },
     )
@@ -89,13 +102,46 @@ def build_graph() -> StateGraph:
     # After retrieve_more, loop back to extract
     graph.add_edge("retrieve_more", "extract")
 
-    # After compress, go to reasoner
-    graph.add_edge("compress", "reason")
+    # After compress, branch by the conditional edge below
+    graph.add_conditional_edges(
+        "compress",
+        _route_after_compress,
+        {
+            "reason": "reason",
+            "small_reasoner": "small_reasoner",
+        },
+    )
 
-    # Reasoner is terminal
+    # Terminal edges
     graph.add_edge("reason", END)
+    graph.add_edge("small_reasoner", END)
 
     return graph.compile()
+
+
+def _route_after_compress(state: AEDEState) -> str:
+    """
+    Route from the compressor based on the decision recorded in workflow_path.
+
+    The compiler's last decision is recorded in workflow_path as
+    "compile(<decision>)". We read it here to decide whether to send the
+    compressed evidence to the small model or the large one.
+
+    Returns:
+        "reason" -> final_reasoner (Gemini)
+        "small_reasoner" -> small_reasoner (llama)
+    """
+    path = state.get("workflow_path", []) or []
+    last_compile = next(
+        (step for step in reversed(path) if step.startswith("compile(")),
+        "",
+    )
+    # Format: "compile(<decision>)"
+    if last_compile.startswith("compile(") and last_compile.endswith(")"):
+        decision = last_compile[len("compile("):-1]
+        if decision == "llama_with_compress":
+            return "small_reasoner"
+    return "reason"
 
 
 # Default graph instance
