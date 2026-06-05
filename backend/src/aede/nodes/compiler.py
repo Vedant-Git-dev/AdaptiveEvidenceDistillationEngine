@@ -11,6 +11,13 @@ DEFAULT_REDUNDANCY_THRESHOLD = 0.4
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
 DEFAULT_MAX_K = 16
 
+# Loop guard: bail out of retrieve_more once we've retried this many times,
+# even if coverage hasn't reached the target.
+MAX_RETRIEVE_MORE_ITERS = 2
+# Minimum coverage improvement between the last two iterations required to
+# keep looping. Below this we assume we're not going to converge.
+COVERAGE_IMPROVEMENT_FLOOR = 0.05
+
 # Direct answer thresholds: skip compressor if evidence is good enough
 DIRECT_ANSWER_COVERAGE = 0.85
 DIRECT_ANSWER_CONFIDENCE = 0.7
@@ -67,11 +74,27 @@ def compiler_decision(
     max_reached = state.get("max_retrieval_reached", False)
     current_top_k = state.get("current_top_k", 4)
     required_reasoning: ReasoningDepth = state.get("required_reasoning", "deep")
+    # Count how many times we've already taken the retrieve_more branch by
+    # scanning workflow_path. workflow_path is a list of strings and is the
+    # most reliable source of truth across LangGraph merge boundaries.
+    workflow_path = state.get("workflow_path", []) or []
+    retrieve_more_count = sum(1 for s in workflow_path if isinstance(s, str) and s.startswith("retrieve_more"))
+    coverage_history = state.get("coverage_history", []) or []
 
     # Case 1: At max retrieval - signal it and proceed to answer
     # This allows answering even with imperfect coverage
     if max_reached:
         return "max_retrieval_reached"
+
+    # Case 1b: Loop guard. If we've already retried MAX_RETRIEVE_MORE_ITERS
+    # times and coverage isn't climbing, stop and answer with what we have.
+    # This keeps borderline queries from spending 3+ LLM rounds on the
+    # retrieve→extract→analyze cycle when the extra chunks aren't helping.
+    if retrieve_more_count >= MAX_RETRIEVE_MORE_ITERS and len(coverage_history) >= 2:
+        last = coverage_history[-1]
+        prev = coverage_history[-2]
+        if (last - prev) < COVERAGE_IMPROVEMENT_FLOOR:
+            return "max_retrieval_reached"
 
     # Case 2: Need more evidence for core concepts
     if coverage < coverage_target or len(missing_parts_core) > 0:

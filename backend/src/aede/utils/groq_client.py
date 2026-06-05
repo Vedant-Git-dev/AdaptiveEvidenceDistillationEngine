@@ -25,7 +25,9 @@ def generate_with_groq(
     Returns:
         Dict with 'text' (response text) and 'usage' (token counts)
     """
-    api_key = settings.models.groq_api_key
+    import os
+
+    api_key = os.getenv("GROQ_API_KEY") or settings.models.groq_api_key
     if not api_key:
         return {"text": "", "usage": {}}
 
@@ -35,9 +37,11 @@ def generate_with_groq(
         import httpx
         from groq import Groq
 
-        # Use explicit httpx client to avoid proxies conflict
-        http_client = httpx.Client(timeout=60.0)
-        client = Groq(api_key=api_key, http_client=http_client)
+        # Use explicit httpx client (with timeout) to avoid proxies conflict
+        client = Groq(
+            api_key=api_key,
+            http_client=httpx.Client(timeout=httpx.Timeout(60)),
+        )
 
         messages = []
         if system_prompt:

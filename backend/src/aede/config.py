@@ -6,15 +6,17 @@ import os
 
 
 def load_env():
-    """Load .env file if it exists."""
-    env_path = Path(".env")
-    if env_path.exists():
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key.strip(), value.strip())
+    """Load .env file if it exists. Looks in CWD first, then backend/.env."""
+    candidates = [Path(".env"), Path(__file__).resolve().parents[2] / ".env"]
+    for env_path in candidates:
+        if env_path.exists():
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        key, value = line.split("=", 1)
+                        os.environ.setdefault(key.strip(), value.strip())
+            return
 
 
 # Load .env on module import
@@ -22,16 +24,17 @@ load_env()
 
 
 class ModelConfig(BaseModel):
-    """Model configuration - Groq for pipeline, Gemini for final reasoner."""
+    """Model configuration - Groq for the small pipeline, Gemini for the
+    final reasoner."""
 
     # Gemini API key (for final reasoner)
     gemini_api_key: str = Field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
 
-    # Groq API key (for extractor, analyzer, compressor)
+    # Groq API key (for extractor, analyzer, compressor, small reasoner)
     groq_api_key: str = Field(default_factory=lambda: os.getenv("GROQ_API_KEY", ""))
 
-    # Pipeline model via Groq (extractor, analyzer, compressor)
-    pipeline_model: str = "llama-3.3-70b-versatile"  
+    # Pipeline model via Groq (extractor, analyzer, compressor, small reasoner)
+    pipeline_model: str = "llama-3.1-8b-instant"
 
     # Gemini model for final reasoner
     gemini_reasoner_model: str = "gemini-2.5-flash"
@@ -40,8 +43,10 @@ class ModelConfig(BaseModel):
 class RetrievalConfig(BaseModel):
     """Retrieval configuration."""
 
-    # ChromaDB settings
-    persist_directory: Path = Path("./data/chroma_db")
+    # ChromaDB settings (resolved relative to backend/, not CWD)
+    persist_directory: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2] / "data" / "chroma_db"
+    )
     collection_name: str = "aede_documents"
 
     # Embeddings

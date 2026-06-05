@@ -57,7 +57,15 @@ class AEDEState(TypedDict):
     # === Outputs ===
     answer: NotRequired[str]
     max_retrieval_reached: NotRequired[bool]  # Flag when k=MAX and coverage < 0.8
+    # How many times we've taken the retrieve_more branch. Used by the compiler
+    # to bail out of the loop early when coverage isn't climbing.
+    retrieve_more_count: NotRequired[int]
     error: NotRequired[str | None]
+
+    # === Routing (per-request) ===
+    # When set, retrieval nodes use this Chroma collection instead of the
+    # default one. Allows per-PDF isolation in the API.
+    collection_name: NotRequired[str | None]
 
 
 def create_initial_state(query: str) -> AEDEState:
@@ -85,5 +93,6 @@ def create_initial_state(query: str) -> AEDEState:
         token_usage={},
         answer="",
         max_retrieval_reached=False,
+        retrieve_more_count=0,
         error=None,
     )

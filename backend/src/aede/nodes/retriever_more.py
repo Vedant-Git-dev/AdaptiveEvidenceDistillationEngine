@@ -27,7 +27,7 @@ def retrieve_more(state: AEDEState) -> AEDEState:
     query = state["query"]
 
     # Get documents from vector store
-    collection = get_or_create_vectorstore()
+    collection = get_or_create_vectorstore(state.get("collection_name"))
     results = collection.query(
         query_texts=[query],
         n_results=new_k,
@@ -48,4 +48,5 @@ def retrieve_more(state: AEDEState) -> AEDEState:
         "current_top_k": new_k,
         "workflow_path": workflow_path,
         "max_retrieval_reached": max_reached,
+        "retrieve_more_count": state.get("retrieve_more_count", 0) + 1,
     }
