@@ -29,6 +29,18 @@ export default function Page() {
     },
   });
 
+  // Reset stale "last run" values as soon as a new query is submitted, so
+  // the right panel doesn't keep showing the previous query's coverage and
+  // token reduction while the new run is in flight.
+  const handleSend = useCallback(
+    async (query: string) => {
+      setLastPipeline(null);
+      setLastRaw(null);
+      await send(query);
+    },
+    [send],
+  );
+
   // Track the last user query in a ref so the raw-gemini effect can read
   // it without depending on the `messages` array (which is in flux during
   // the run). This is the only way to be sure the effect sees the query
@@ -84,7 +96,7 @@ export default function Page() {
       <LeftPanel stats={stats} onStats={onStats} />
       <ChatPanel
         messages={messages}
-        onSend={send}
+        onSend={handleSend}
         isRunning={isRunning}
         currentStep={currentStep}
         hasDocument={(stats?.embeddings ?? 0) > 0}
