@@ -115,12 +115,13 @@ export function RightPanel({ steps, pipeline, rawGemini, totalMs, loading }: Pro
         </div>
       )}
 
-      {/* Token Reduction — the hero metric */}
+      {/* Token Reduction — the hero metric. Card stays blank until BOTH
+          AEDE and the raw-Gemini baseline have returned. */}
       <section className="card">
         <h3 className="mb-1 text-xs font-semibold tracking-wide text-surface-500 dark:text-surface-400 uppercase">
           Token Reduction
         </h3>
-        {pipeline ? (
+        {pipeline && rawGemini ? (
           <>
             <div className="grid grid-cols-3 gap-2">
               <Metric
@@ -146,25 +147,14 @@ export function RightPanel({ steps, pipeline, rawGemini, totalMs, loading }: Pro
             )}
           </>
         ) : (
-          <p className="text-sm text-surface-500">
-            Run a query to see how much AEDE saved vs. sending everything to
-            Gemini.
-          </p>
-        )}
-        {pipeline && (
-          <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 border-t border-surface-200 pt-3 text-xs dark:border-surface-800">
-            <Pair label="Retrievals" value={`k=${pipeline.current_top_k}`} />
-            <Pair
-              label="Reasoning"
-              value={
-                pipeline.required_reasoning === "none"
-                  ? "none"
-                  : pipeline.required_reasoning === "light"
-                    ? "light"
-                    : "deep"
-              }
-            />
-          </dl>
+          <div className="flex items-center gap-2 py-3 text-sm text-surface-500">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>
+              {loading
+                ? "Waiting for AEDE and the raw-Gemini baseline…"
+                : "Run a query to see how much AEDE saved vs. raw Gemini."}
+            </span>
+          </div>
         )}
       </section>
 
@@ -282,15 +272,6 @@ function Metric({
         {label}
       </span>
       <span className={cn("stat-num", toneClass)}>{value}</span>
-    </div>
-  );
-}
-
-function Pair({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-baseline justify-between">
-      <dt className="text-surface-500">{label}</dt>
-      <dd className="font-mono">{value}</dd>
     </div>
   );
 }

@@ -59,6 +59,9 @@ async def stream_run(
     previous_path: list[str] = []
     node_started_at: float | None = None
     current_node: str | None = None
+    # Merge diffs as we go so the final state we ship is the real one,
+    # not a re-invocation of the whole graph.
+    merged: dict[str, Any] = dict(initial_state)
 
     try:
         async for chunk in graph.astream(initial_state, stream_mode="updates"):
@@ -86,7 +89,11 @@ async def stream_run(
                         "model": model_for(node_name),
                         "t": int((now - started) * 1000),
                     }
-                # Note: we don't yield per-token updates; that's out of scope.
+                # Accumulate the diff into the merged state. Keys in the
+                # diff overwrite keys in the merged state — that matches
+                # how LangGraph's StateReducer treats TypedDict updates.
+                if partial:
+                    merged.update(partial)
         # Close out the final node.
         if current_node is not None:
             now = time.perf_counter()
@@ -99,10 +106,8 @@ async def stream_run(
                 "workflow_path": previous_path,
             }
 
-        # Final state — invoke once more synchronously to get the merged state.
-        # (Cheap; the graph has already executed.)
-        final = await graph.ainvoke(initial_state)
+        # No re-invocation — the merged state already has the final values.
         total_ms = int((time.perf_counter() - started) * 1000)
-        yield {"event": "done", "final_state": final, "total_ms": total_ms}
+        yield {"event": "done", "final_state": merged, "total_ms": total_ms}
     except Exception as exc:  # noqa: BLE001
         yield {"event": "error", "message": str(exc)}

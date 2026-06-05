@@ -83,8 +83,12 @@ def small_reasoner(state: AEDEState) -> AEDEState:
 
     current_usage = state.get("token_usage", {})
     if usage:
-        current_usage["small_reasoner_input"] = current_usage.get("small_reasoner_input", 0) + usage.get("prompt_tokens", 0)
-        current_usage["small_reasoner_output"] = current_usage.get("small_reasoner_output", 0) + usage.get("completion_tokens", 0)
+        in_t = usage.get("prompt_tokens", 0)
+        out_t = usage.get("completion_tokens", 0)
+        current_usage["small_reasoner_input"] = current_usage.get("small_reasoner_input", 0) + in_t
+        current_usage["small_reasoner_output"] = current_usage.get("small_reasoner_output", 0) + out_t
+        # `total` represents the FINAL model's bill (Llama in this branch).
+        current_usage["total"] = in_t + out_t
 
     return {
         **state,

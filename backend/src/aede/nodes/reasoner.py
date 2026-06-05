@@ -65,9 +65,12 @@ Guidelines:
     # Update token tracking
     current_usage = state.get("token_usage", {})
     if usage_metadata:
-        current_usage["reasoner_input"] = current_usage.get("reasoner_input", 0) + (usage_metadata.prompt_token_count or 0)
-        current_usage["reasoner_output"] = current_usage.get("reasoner_output", 0) + (usage_metadata.candidates_token_count or 0)
-        current_usage["total"] = usage_metadata.total_token_count
+        in_t = usage_metadata.prompt_token_count or 0
+        out_t = usage_metadata.candidates_token_count or 0
+        current_usage["reasoner_input"] = current_usage.get("reasoner_input", 0) + in_t
+        current_usage["reasoner_output"] = current_usage.get("reasoner_output", 0) + out_t
+        # `total` represents the FINAL model's bill (Gemini in this branch).
+        current_usage["total"] = in_t + out_t
 
     return {
         **state,

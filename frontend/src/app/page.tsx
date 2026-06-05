@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LeftPanel } from "@/components/LeftPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { RightPanel } from "@/components/RightPanel";
@@ -29,18 +29,33 @@ export default function Page() {
     },
   });
 
+  // Track the last user query in a ref so the raw-gemini effect can read
+  // it without depending on the `messages` array (which is in flux during
+  // the run). This is the only way to be sure the effect sees the query
+  // the moment `run.status` flips to "done".
+  const lastQueryRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Update the ref whenever a new user message is appended.
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        lastQueryRef.current = messages[i].content;
+        break;
+      }
+    }
+  }, [messages]);
+
   // When the run finishes, fetch the raw-gemini baseline for the metrics card.
   useEffect(() => {
     if (run.status !== "done" || !lastPipeline) return;
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
-    if (!lastUser) return;
+    const query = lastQueryRef.current;
+    if (!query) return;
     let cancelled = false;
     (async () => {
       try {
         const res = await fetch("/api/raw-gemini", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: lastUser.content }),
+          body: JSON.stringify({ query }),
         });
         if (res.ok && !cancelled) {
           const r = (await res.json()) as RawGemini;
@@ -53,7 +68,6 @@ export default function Page() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.status, lastPipeline]);
 
   const currentStep = useMemo(() => {
