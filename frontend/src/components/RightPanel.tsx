@@ -51,14 +51,6 @@ export function RightPanel({ steps, pipeline, rawGemini, totalMs, loading }: Pro
           </ol>
         )}
 
-        {pipeline && (
-          <div className="mt-4 flex items-center justify-between border-t border-surface-200 pt-3 text-xs dark:border-surface-800">
-            <span className="text-surface-500">Coverage</span>
-            <span className="font-semibold tabular-nums">
-              {(pipeline.coverage * 100).toFixed(0)}%
-            </span>
-          </div>
-        )}
         {pipeline && pipeline.coverage_history.length > 0 && (
           <div className="mt-1 text-accent-500">
             <Sparkline values={pipeline.coverage_history} width={296} height={28} />

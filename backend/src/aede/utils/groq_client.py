@@ -1,6 +1,7 @@
 """Groq API client wrapper for pipeline nodes."""
 
 import json
+import re
 from typing import Optional
 
 from aede.config import settings
@@ -55,8 +56,9 @@ def generate_with_groq(
             max_tokens=max_tokens,
         )
 
+        raw_text = response.choices[0].message.content if response.choices else ""
         return {
-            "text": response.choices[0].message.content if response.choices else "",
+            "text": _clean_model_output(raw_text),
             "usage": {
                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
                 "completion_tokens": response.usage.completion_tokens if response.usage else 0,
@@ -70,3 +72,33 @@ def generate_with_groq(
     except Exception as e:
         print(f"Groq API error: {e}")
         return {"text": "", "usage": {}, "error": str(e)}
+
+
+def _clean_model_output(text: str) -> str:
+    """Strip reasoning/fence wrappers that small models sometimes emit.
+
+    Qwen3-32B (and similar reasoning models) wrap their final answer in two
+    ways the JSON parsers in this pipeline can't handle:
+      1. A leading <think>...</think> block (the model's chain of thought).
+      2. A ```json ... ``` code fence around the answer, even when the
+         system prompt asked for raw JSON.
+
+    The prompt for each node already says "Return ONLY valid JSON" — but the
+    model ignores that on roughly half of calls. Stripping both shapes here
+    keeps the call sites (extractor / analyzer / compressor / small_reasoner)
+    from needing to know which model is in use.
+    """
+    if not text:
+        return text
+
+    # 1. Drop the <think>...</think> block. Use DOTALL so the think body can
+    #    span newlines. Keep whatever comes after.
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+
+    # 2. If the response is wrapped in a ```json ... ``` or ``` ... ``` fence,
+    #    keep only the inner content.
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", cleaned, flags=re.DOTALL)
+    if fence_match:
+        cleaned = fence_match.group(1)
+
+    return cleaned.strip()
