@@ -13,6 +13,7 @@ def generate_with_groq(
     model: str = "",
     temperature: float = 0.3,
     max_tokens: int = 4096,
+    json_mode: bool = False,
 ) -> dict:
     """Generate content using Groq API.
 
@@ -22,6 +23,8 @@ def generate_with_groq(
         model: Model to use (defaults to pipeline_model from config)
         temperature: Sampling temperature
         max_tokens: Max tokens to generate
+        json_mode: If True, request JSON-only output (skips <think> blocks,
+                   faster for small models on structured-output prompts)
 
     Returns:
         Dict with 'text' (response text) and 'usage' (token counts)
@@ -54,6 +57,7 @@ def generate_with_groq(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            response_format={"type": "json_object"} if json_mode else None,
         )
 
         raw_text = response.choices[0].message.content if response.choices else ""

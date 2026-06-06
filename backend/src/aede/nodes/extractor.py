@@ -21,7 +21,7 @@ def extractor(state: AEDEState) -> AEDEState:
     # Token optimization: limit docs, chunk size, and total content
     max_docs = 10
     max_chunk_chars = 1500
-    max_total_chars = 12000
+    max_total_chars = 6000                              # was 12000 — cuts input ~50%
 
     documents = documents[:max_docs]
 
@@ -50,6 +50,7 @@ If no relevant facts, respond: {"facts": []}"""
     result = generate_with_groq(
         prompt=user_prompt,
         system_prompt=system_prompt,
+        json_mode=True,
     )
 
     response_text = result.get("text", "")

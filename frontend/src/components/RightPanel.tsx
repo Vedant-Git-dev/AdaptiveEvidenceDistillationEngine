@@ -1,25 +1,19 @@
 "use client";
 
+import { Sun, Moon, AlertTriangle, Loader2 } from "lucide-react";
 import { useTheme } from "@/components/ThemeProvider";
-import { Check, Sun, Moon, AlertTriangle, Loader2 } from "lucide-react";
-import type { PipelineState, RawGemini, WorkflowStepUI } from "@/lib/types";
-import { aedeTotalTokens, reductionPct } from "@/lib/workflow";
-import { Sparkline } from "@/components/Sparkline";
+import { parseWorkflow } from "@/lib/workflow";
 import { cn } from "@/lib/cn";
+import type { OptimizeResponse } from "@/lib/types";
 
 type Props = {
-  steps: WorkflowStepUI[];
-  pipeline: PipelineState | null;
-  rawGemini: RawGemini | null;
-  totalMs: number;
+  result: OptimizeResponse | null;
   loading: boolean;
+  error: string | null;
 };
 
-export function RightPanel({ steps, pipeline, rawGemini, totalMs, loading }: Props) {
+export function RightPanel({ result, loading, error }: Props) {
   const { theme, toggle } = useTheme();
-  const aede = pipeline ? aedeTotalTokens(pipeline.token_usage) : 0;
-  const raw = rawGemini?.tokens ?? 0;
-  const reduction = pipeline && rawGemini ? reductionPct(aede, raw) : null;
 
   return (
     <aside className="flex h-full w-[22rem] shrink-0 flex-col gap-4 overflow-y-auto border-l border-surface-200 bg-surface-50 p-4 dark:border-surface-800 dark:bg-surface-900">
@@ -28,7 +22,7 @@ export function RightPanel({ steps, pipeline, rawGemini, totalMs, loading }: Pro
           <h2 className="text-sm font-semibold tracking-wide text-surface-500 dark:text-surface-400 uppercase">
             Workflow
           </h2>
-          <p className="text-xs text-surface-500">Live view of AEDE's reasoning.</p>
+          <p className="text-xs text-surface-500">AEDE's last run.</p>
         </div>
         <button
           onClick={toggle}
@@ -41,166 +35,152 @@ export function RightPanel({ steps, pipeline, rawGemini, totalMs, loading }: Pro
 
       {/* Steps */}
       <section className="card">
-        {steps.length === 0 && !loading ? (
-          <p className="text-sm text-surface-500">No steps yet — ask a question.</p>
-        ) : (
+        {result ? (
           <ol className="flex flex-col gap-1.5">
-            {steps.map((s) => (
-              <StepRow key={s.id} step={s} />
+            {parseWorkflow(result.workflow_path, result.timings).map((s) => (
+              <li
+                key={s.id}
+                className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm"
+              >
+                <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                  ✓
+                </span>
+                <span className="font-medium">{s.label}</span>
+                {s.model && (
+                  <span className="truncate text-[10px] text-surface-500">
+                    ({s.model})
+                  </span>
+                )}
+                {s.detail && (
+                  <span className="ml-auto font-mono text-[10px] text-surface-500">{s.detail}</span>
+                )}
+              </li>
             ))}
           </ol>
-        )}
-
-        {pipeline && pipeline.coverage_history.length > 0 && (
-          <div className="mt-1 text-accent-500">
-            <Sparkline values={pipeline.coverage_history} width={296} height={28} />
-          </div>
-        )}
-
-        {/* Per-step timing table */}
-        {steps.some((s) => s.elapsedMs != null) && (
-          <div className="mt-4 border-t border-surface-200 pt-3 dark:border-surface-800">
-            <h3 className="mb-2 text-[10px] font-semibold tracking-wide text-surface-500 uppercase">
-              Timing
-            </h3>
-            <ul className="flex flex-col gap-1 text-xs">
-              {steps
-                .filter((s) => s.elapsedMs != null)
-                .map((s) => (
-                  <li
-                    key={s.id}
-                    className="flex items-baseline justify-between font-mono"
-                  >
-                    <span className="text-surface-600 dark:text-surface-400">
-                      {s.label}
-                    </span>
-                    <span className="tabular-nums">{(s.elapsedMs! / 1000).toFixed(2)}s</span>
-                  </li>
-                ))}
-              {totalMs > 0 && (
-                <li className="mt-1 flex items-baseline justify-between border-t border-surface-200 pt-1 font-mono font-semibold dark:border-surface-800">
-                  <span>Total (AEDE)</span>
-                  <span className="tabular-nums">{(totalMs / 1000).toFixed(2)}s</span>
-                </li>
-              )}
-            </ul>
-          </div>
-        )}
-      </section>
-
-      {/* Route chip */}
-      {pipeline && (
-        <div className="flex items-center gap-2 text-xs text-surface-500">
-          <span>Route</span>
-          <span
-            className={cn(
-              "pill",
-              pipeline.route === "direct_answer"
-                ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                : pipeline.route === "max_retrieval_reached"
-                  ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                  : "bg-accent-500/15 text-accent-700 dark:text-accent-300",
-            )}
-          >
-            {humanRoute(pipeline.route)}
-          </span>
-        </div>
-      )}
-
-      {/* Token Reduction — the hero metric. Card stays blank until BOTH
-          AEDE and the raw-Gemini baseline have returned. */}
-      <section className="card">
-        <h3 className="mb-1 text-xs font-semibold tracking-wide text-surface-500 dark:text-surface-400 uppercase">
-          Token Reduction
-        </h3>
-        {pipeline && rawGemini ? (
-          <>
-            <div className="grid grid-cols-3 gap-2">
-              <Metric
-                label="Raw Gemini"
-                value={raw > 0 ? raw.toLocaleString() : "—"}
-                tone="muted"
-              />
-              <Metric
-                label="AEDE"
-                value={aede > 0 ? aede.toLocaleString() : "—"}
-                tone="accent"
-              />
-              <Metric
-                label="Reduction"
-                value={reduction != null ? `${reduction}%` : "—"}
-                tone={reduction != null && reduction > 0 ? "good" : "muted"}
-              />
-            </div>
-            {raw > 0 && aede > 0 && (
-              <div className="mt-3">
-                <ReductionBar aede={aede} raw={raw} />
-              </div>
-            )}
-          </>
-        ) : (
+        ) : loading ? (
           <div className="flex items-center gap-2 py-3 text-sm text-surface-500">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            <span>
-              {loading
-                ? "Waiting for AEDE and the raw-Gemini baseline…"
-                : "Run a query to see how much AEDE saved vs. raw Gemini."}
+            <span>Running AEDE pipeline…</span>
+          </div>
+        ) : (
+          <p className="text-sm text-surface-500">No steps yet — ask a question.</p>
+        )}
+
+        {result && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-surface-500">
+            <span>Route</span>
+            <span className={cn("pill", routeTone(result.decision))}>
+              {humanRoute(result.decision)}
             </span>
           </div>
         )}
       </section>
 
-      {pipeline?.error && (
+      {/* Per-step timing */}
+      {result && result.timings && result.timings.length > 0 && (
+        <section className="card">
+          <h3 className="mb-2 text-xs font-semibold tracking-wide text-surface-500 dark:text-surface-400 uppercase">
+            Timing
+          </h3>
+          <ul className="flex flex-col gap-1 text-xs">
+            {result.timings.map((t, i) => (
+              <li
+                key={`${t.node}-${i}`}
+                className="flex items-baseline justify-between font-mono"
+              >
+                <span className="text-surface-600 dark:text-surface-400">
+                  {labelForNode(t.node)}
+                </span>
+                <span className="tabular-nums">{(t.elapsed_ms / 1000).toFixed(2)}s</span>
+              </li>
+            ))}
+            {result.total_ms > 0 && (
+              <li className="mt-1 flex items-baseline justify-between border-t border-surface-200 pt-1 font-mono font-semibold dark:border-surface-800">
+                <span>Total (AEDE)</span>
+                <span className="tabular-nums">{(result.total_ms / 1000).toFixed(2)}s</span>
+              </li>
+            )}
+          </ul>
+        </section>
+      )}
+
+      {/* Token Reduction */}
+      <section className="card">
+        <h3 className="mb-1 text-xs font-semibold tracking-wide text-surface-500 dark:text-surface-400 uppercase">
+          Token Reduction
+        </h3>
+        {result ? (
+          <>
+            <div className="grid grid-cols-3 gap-2">
+              <Metric
+                label="Final model"
+                value={result.final_tokens > 0 ? result.final_tokens.toLocaleString() : "—"}
+                tone="accent"
+              />
+              <Metric
+                label="Raw Gemini"
+                value={result.raw_tokens > 0 ? result.raw_tokens.toLocaleString() : "—"}
+                tone="muted"
+              />
+              <Metric
+                label="Saved"
+                value={result.raw_tokens > 0 ? `${Math.round(result.saved_pct * 100)}%` : "—"}
+                tone={result.saved_pct > 0 ? "good" : "muted"}
+              />
+            </div>
+            {result.raw_tokens > 0 && result.final_tokens > 0 && (
+              <div className="mt-3">
+                <ReductionBar aede={result.final_tokens} raw={result.raw_tokens} />
+              </div>
+            )}
+            <div className="mt-3 text-[10px] text-surface-500">
+              Items: {result.items_count} · Coverage: {(result.coverage * 100).toFixed(0)}%
+            </div>
+          </>
+        ) : loading ? (
+          <div className="flex items-center gap-2 py-3 text-sm text-surface-500">
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <span>Waiting for results…</span>
+          </div>
+        ) : (
+          <p className="text-sm text-surface-500">Run a query to see how much AEDE saved vs. raw Gemini.</p>
+        )}
+      </section>
+
+      {error && (
         <div className="flex items-start gap-2 rounded-lg border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <span>{pipeline.error}</span>
+          <span>{error}</span>
         </div>
       )}
     </aside>
   );
 }
 
-function StepRow({ step }: { step: WorkflowStepUI }) {
-  const isRunning = step.status === "running";
-  return (
-    <li
-      className={cn(
-        "flex items-center gap-2.5 rounded-md px-1.5 py-1.5 text-sm transition",
-        isRunning && "bg-accent-500/5",
-      )}
-    >
-      <span
-        className={cn(
-          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
-          isRunning
-            ? "bg-accent-500/15 text-accent-600 dark:text-accent-400"
-            : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-        )}
-      >
-        {isRunning ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <Check className="h-3 w-3" strokeWidth={3} />
-        )}
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate font-medium">{step.label}</span>
-        <span className="truncate text-[10px] text-surface-500">
-          ({step.model})
-        </span>
-      </div>
-      {step.detail && (
-        <span className="font-mono text-[10px] text-surface-500">
-          {step.detail}
-        </span>
-      )}
-      {step.elapsedMs != null && (
-        <span className="font-mono text-[10px] tabular-nums text-surface-500">
-          {(step.elapsedMs / 1000).toFixed(2)}s
-        </span>
-      )}
-    </li>
-  );
+function routeTone(decision: string): string {
+  if (decision === "direct_answer") return "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300";
+  if (decision === "max_retrieval_reached") return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+  return "bg-accent-500/15 text-accent-700 dark:text-accent-300";
+}
+
+function humanRoute(decision: string): string {
+  switch (decision) {
+    case "direct_answer":
+      return "Direct Answer";
+    case "llama_with_compress":
+      return "Compressed + Llama";
+    case "deep_reasoning":
+      return "Deep Reasoning";
+    case "answer":
+    case "compress":
+      return "Compress → Gemini";
+    case "retrieve_more":
+      return "Retrieve More";
+    case "max_retrieval_reached":
+      return "Max Retrieval";
+    default:
+      return decision || "—";
+  }
 }
 
 function ReductionBar({ aede, raw }: { aede: number; raw: number }) {
@@ -209,44 +189,35 @@ function ReductionBar({ aede, raw }: { aede: number; raw: number }) {
   return (
     <div>
       <div className="flex h-2 w-full overflow-hidden rounded-full bg-surface-200 dark:bg-surface-800">
-        <div
-          className="h-full bg-accent-500 transition-all"
-          style={{ width: `${aedePct}%` }}
-        />
+        <div className="h-full bg-accent-500 transition-all" style={{ width: `${aedePct}%` }} />
       </div>
       <div className="mt-1 flex justify-between text-[10px] text-surface-500">
         <span>AEDE {aedePct.toFixed(0)}%</span>
-        <span className="text-emerald-600 dark:text-emerald-400">
-          Saved {savedPct.toFixed(0)}%
-        </span>
+        <span className="text-emerald-600 dark:text-emerald-400">Saved {savedPct.toFixed(0)}%</span>
       </div>
     </div>
   );
 }
 
-function humanRoute(route: string) {
-  switch (route) {
-    case "direct_answer":
-      return "Direct Answer";
-    case "llama_with_compress":
-      return "Compressed + Llama";
-    case "deep_reasoning":
-      return "Deep Reasoning";
-    case "answer":
-      return "Compress → Gemini";
-    case "retrieve_more":
-      return "Retrieve More";
-    case "max_retrieval_reached":
-      return "Max Retrieval";
-    default:
-      return route || "—";
-  }
+const NODE_LABELS: Record<string, string> = {
+  extract_concepts: "Extract concepts",
+  focused_retriever: "Retrieve",
+  retrieve: "Retrieve",
+  retrieve_more: "Retrieve more",
+  extract: "Extract",
+  analyze: "Analyze",
+  compile: "Compile",
+  compress: "Compress",
+  reason: "Reason (Gemini)",
+  small_reasoner: "Direct Answer",
+};
+
+function labelForNode(node: string): string {
+  return NODE_LABELS[node] ?? node;
 }
 
 function Metric({
-  label,
-  value,
-  tone,
+  label, value, tone,
 }: {
   label: string;
   value: string;
@@ -260,9 +231,7 @@ function Metric({
         : "text-surface-700 dark:text-surface-300";
   return (
     <div className="flex flex-col">
-      <span className="text-[10px] font-medium tracking-wide text-surface-500 uppercase">
-        {label}
-      </span>
+      <span className="text-[10px] font-medium tracking-wide text-surface-500 uppercase">{label}</span>
       <span className={cn("stat-num", toneClass)}>{value}</span>
     </div>
   );

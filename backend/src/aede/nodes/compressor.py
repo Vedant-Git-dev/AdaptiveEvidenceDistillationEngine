@@ -45,6 +45,7 @@ def evidence_compressor(state: AEDEState) -> AEDEState:
     result = generate_with_groq(
         prompt=user_prompt,
         system_prompt=system_prompt,
+        json_mode=True,
     )
 
     response_text = result.get("text", "")

@@ -1,112 +1,116 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LeftPanel } from "@/components/LeftPanel";
+import { useCallback, useEffect, useState } from "react";
+import { LeftPanel, type AddKind, type CollectionItem } from "@/components/LeftPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { RightPanel } from "@/components/RightPanel";
-import { useChatStream } from "@/lib/useChatStream";
-import type {
-  ChatMessage,
-  PipelineState,
-  RawGemini,
-  StatsResponse,
-} from "@/lib/types";
+import { addCollection, deleteCollection, fetchCollections, useOptimize } from "@/lib/useOptimize";
+import type { ChatMessage } from "@/lib/types";
+
+let msgCounter = 0;
+const newId = () => `m_${Date.now()}_${++msgCounter}`;
 
 export default function Page() {
+  const [collections, setCollections] = useState<CollectionItem[]>([]);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [stats, setStats] = useState<StatsResponse | null>(null);
-  const [lastPipeline, setLastPipeline] = useState<PipelineState | null>(null);
-  const [lastRaw, setLastRaw] = useState<RawGemini | null>(null);
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
-  const handleMessage = useCallback((m: ChatMessage) => {
-    setMessages((prev) => [...prev, m]);
+  const { run, isRunning, send } = useOptimize();
+
+  const refresh = useCallback(async () => {
+    const data = await fetchCollections();
+    setCollections(data as CollectionItem[]);
+    // Drop selections that no longer exist
+    setSelected((prev) => {
+      const names = new Set(data.map((c) => c.name));
+      return new Set([...prev].filter((n) => names.has(n)));
+    });
   }, []);
 
-  const { run, isRunning, send } = useChatStream({
-    onAssistantMessage: (m) => {
-      handleMessage(m);
-      if (m.pipeline) setLastPipeline(m.pipeline);
-    },
-  });
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
-  // Reset stale "last run" values as soon as a new query is submitted, so
-  // the right panel doesn't keep showing the previous query's coverage and
-  // token reduction while the new run is in flight.
-  const handleSend = useCallback(
-    async (query: string) => {
-      setLastPipeline(null);
-      setLastRaw(null);
-      await send(query);
+  const onAdd = useCallback(
+    async (kind: AddKind, payload: { name: string; file?: File; text?: string }) => {
+      setAddBusy(true);
+      setAddError(null);
+      try {
+        await addCollection(kind, payload);
+        await refresh();
+      } catch (e) {
+        setAddError(e instanceof Error ? e.message : "Add failed");
+        throw e;
+      } finally {
+        setAddBusy(false);
+      }
     },
-    [send],
+    [refresh],
   );
 
-  // Track the last user query in a ref so the raw-gemini effect can read
-  // it without depending on the `messages` array (which is in flux during
-  // the run). This is the only way to be sure the effect sees the query
-  // the moment `run.status` flips to "done".
-  const lastQueryRef = useRef<string | null>(null);
-  useEffect(() => {
-    // Update the ref whenever a new user message is appended.
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "user") {
-        lastQueryRef.current = messages[i].content;
-        break;
-      }
-    }
-  }, [messages]);
-
-  // When the run finishes, fetch the raw-gemini baseline for the metrics card.
-  useEffect(() => {
-    if (run.status !== "done" || !lastPipeline) return;
-    const query = lastQueryRef.current;
-    if (!query) return;
-    let cancelled = false;
-    (async () => {
+  const onDelete = useCallback(
+    async (name: string) => {
       try {
-        const res = await fetch("/api/raw-gemini", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query }),
-        });
-        if (res.ok && !cancelled) {
-          const r = (await res.json()) as RawGemini;
-          setLastRaw(r);
-        }
-      } catch {
-        /* ignore */
+        await deleteCollection(name);
+        await refresh();
+      } catch (e) {
+        setAddError(e instanceof Error ? e.message : "Delete failed");
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [run.status, lastPipeline]);
+    },
+    [refresh],
+  );
 
-  const currentStep = useMemo(() => {
-    for (let i = run.steps.length - 1; i >= 0; i--) {
-      if (run.steps[i].status === "running") return run.steps[i];
+  const onToggle = useCallback((name: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+
+  const onSend = useCallback(
+    async (query: string) => {
+      const userMsg: ChatMessage = { id: newId(), role: "user", content: query };
+      setMessages((prev) => [...prev, userMsg]);
+      await send([...selected], query);
+    },
+    [selected, send],
+  );
+
+  // Append the assistant message when the run finishes
+  useEffect(() => {
+    if (run.status === "done" && run.result) {
+      const r = run.result;
+      setMessages((prev) => [
+        ...prev,
+        { id: newId(), role: "assistant", content: r.answer, result: r },
+      ]);
     }
-    return null;
-  }, [run.steps]);
-
-  const onStats = useCallback((s: StatsResponse) => setStats(s), []);
+  }, [run.status, run.result]);
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
-      <LeftPanel stats={stats} onStats={onStats} />
+      <LeftPanel
+        collections={collections}
+        selected={selected}
+        onToggle={onToggle}
+        onAdd={onAdd}
+        onDelete={onDelete}
+        busy={addBusy}
+      />
       <ChatPanel
         messages={messages}
-        onSend={handleSend}
+        onSend={onSend}
         isRunning={isRunning}
-        currentStep={currentStep}
-        hasDocument={(stats?.embeddings ?? 0) > 0}
+        hasCollections={selected.size > 0}
       />
       <RightPanel
-        steps={run.steps}
-        pipeline={lastPipeline}
-        rawGemini={lastRaw}
-        totalMs={run.totalMs}
+        result={run.result}
         loading={isRunning}
+        error={run.errorMessage ?? addError}
       />
     </div>
   );

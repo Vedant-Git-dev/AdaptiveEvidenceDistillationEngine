@@ -72,6 +72,7 @@ def small_reasoner(state: AEDEState) -> AEDEState:
         prompt=user_prompt,
         system_prompt=system_prompt,
         max_tokens=_MAX_OUTPUT_TOKENS,
+        json_mode=False,                                  # free-form answer, not JSON
     )
 
     text = result.get("text", "")

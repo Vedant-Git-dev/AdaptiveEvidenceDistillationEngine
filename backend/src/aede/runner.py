@@ -111,3 +111,57 @@ async def stream_run(
         yield {"event": "done", "final_state": merged, "total_ms": total_ms}
     except Exception as exc:  # noqa: BLE001
         yield {"event": "error", "message": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Synchronous timing: same wall-clock-around-node-transition idea, but
+# returns a list of timings instead of an SSE stream. Used by /optimize.
+# ---------------------------------------------------------------------------
+
+
+def run_with_timings(
+    graph: StateGraph,
+    initial_state: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+    """Run the compiled graph synchronously and capture per-node wall-clock
+    timings. Returns (final_state, timings, total_ms)."""
+    started = time.perf_counter()
+    previous_path: list[str] = []
+    node_started_at: float | None = None
+    current_node: str | None = None
+    timings: list[dict[str, Any]] = []
+    merged: dict[str, Any] = dict(initial_state)
+
+    for chunk in graph.stream(initial_state, stream_mode="updates"):
+        for node_name, partial in chunk.items():
+            now = time.perf_counter()
+            workflow_path = (partial or {}).get("workflow_path") or previous_path
+            if current_node is not None and current_node != node_name:
+                elapsed_ms = int((now - (node_started_at or now)) * 1000)
+                timings.append(
+                    {
+                        "node": current_node,
+                        "model": model_for(current_node),
+                        "elapsed_ms": elapsed_ms,
+                    }
+                )
+                previous_path = workflow_path
+            if current_node != node_name:
+                current_node = node_name
+                node_started_at = now
+            if partial:
+                merged.update(partial)
+
+    if current_node is not None:
+        now = time.perf_counter()
+        elapsed_ms = int((now - (node_started_at or now)) * 1000)
+        timings.append(
+            {
+                "node": current_node,
+                "model": model_for(current_node),
+                "elapsed_ms": elapsed_ms,
+            }
+        )
+
+    total_ms = int((time.perf_counter() - started) * 1000)
+    return merged, timings, total_ms

@@ -1,11 +1,13 @@
 """Node 1: Focused Retriever - Pure retrieval, no LLM.
 
-Also exposes per-collection helpers so the API can keep one Chroma collection
-per uploaded PDF.
+Chroma persists to disk (PersistentClient). The /optimize endpoint creates
+a fresh per-request collection for every call and deletes it at the end of
+the request, so nothing carries over between requests — the persistence is
+just there to avoid loading the embedding index into memory if you want to
+inspect it manually during a request.
 """
 from __future__ import annotations
 
-import re
 from typing import Optional
 
 import chromadb
@@ -15,92 +17,170 @@ from aede.state import AEDEState
 from aede.config import settings
 
 
-# Initialize ChromaDB client
-_chroma_client: Optional[chromadb.PersistentClient] = None
+# Single persistent client, process-wide. Points at backend/data/chroma_db.
+_chroma_client: chromadb.PersistentClient | None = None
+
+
+# Fixed name for the per-request scratch collection. The /optimize endpoint
+# recreates it on every call so retrieval always starts empty.
+REQUEST_COLLECTION = "aede_request"
 
 
 def get_chroma_client() -> chromadb.PersistentClient:
-    """Get or create ChromaDB client."""
+    """Get or create the persistent Chroma client."""
     global _chroma_client
     if _chroma_client is None:
         settings.retrieval.persist_directory.mkdir(parents=True, exist_ok=True)
         _chroma_client = chromadb.PersistentClient(
             path=str(settings.retrieval.persist_directory),
-            settings=ChromaSettings(
-                anonymized_telemetry=False,
-            ),
+            settings=ChromaSettings(anonymized_telemetry=False),
         )
     return _chroma_client
 
 
-def _sanitize_collection_name(name: str) -> str:
-    """Chroma collection names: 3-63 chars, [a-zA-Z0-9_-], must start/end alnum."""
-    s = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
-    s = re.sub(r"_+", "_", s).strip("_-")
-    if not s or not s[0].isalnum():
-        s = "c_" + s
-    s = s[:63]
-    if len(s) < 3:
-        s = (s + "___")[:3]
-    return s
+def make_request_collection() -> chromadb.Collection:
+    """Create a fresh, empty collection for the current /optimize call.
+
+    Any leftover collection with the same name is deleted first so that the
+    request always starts from a clean slate. Nothing persists across calls.
+    """
+    client = get_chroma_client()
+    try:
+        client.delete_collection(REQUEST_COLLECTION)
+    except Exception:
+        pass
+    return client.get_or_create_collection(
+        name=REQUEST_COLLECTION,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+def drop_request_collection() -> None:
+    """Delete the per-request collection. Called by /optimize at the end of
+    the request so nothing carries over to the next call."""
+    client = get_chroma_client()
+    try:
+        client.delete_collection(REQUEST_COLLECTION)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Multi-collection pool: query N collections, pool top-k from each
+# ---------------------------------------------------------------------------
+
+
+def query_pool(
+    collection_names: list[str],
+    query: str,
+    per_collection_k: int,
+) -> list[str]:
+    """Query each named collection with the same query, return the union of
+    the top-k docs from each. Used by /optimize when multiple collections
+    are selected."""
+    client = get_chroma_client()
+    pooled: list[str] = []
+    for name in collection_names:
+        try:
+            coll = client.get_collection(name=name)
+        except Exception:
+            continue
+        results = coll.query(
+            query_texts=[query],
+            n_results=per_collection_k,
+            include=["documents"],
+        )
+        docs = results.get("documents", [[]])[0]
+        pooled.extend(docs)
+    return pooled
+
+
+def list_aede_collections() -> list[dict]:
+    """List all AEDE-managed collections with item counts.
+
+    Each item: {name, display_name, items, type, kind?}
+    - name: internal collection id (e.g. "pdf_FY26-Policy")
+    - display_name: the user-supplied name (e.g. "FY26-Policy"); falls back
+      to a stripped version of `name` for legacy collections.
+    - type: "pdf" | "paste" | "other"
+    - kind: "chat" | "agent" (paste only)
+    """
+    client = get_chroma_client()
+    out: list[dict] = []
+    for c in client.list_collections():
+        name = c.name
+        if name == REQUEST_COLLECTION:
+            continue
+        try:
+            count = c.count()
+        except Exception:
+            count = 0
+
+        # Pull display_name + kind from the collection's metadata, which the
+        # add endpoints set at creation time. Legacy collections don't have
+        # these — fall back to stripping the prefix.
+        meta = c.metadata or {}
+        display_name = meta.get("display_name") or _fallback_display_name(name)
+        kind = meta.get("source_kind") if name.startswith("paste_") else None
+
+        type_label = (
+            "pdf" if name.startswith("pdf_")
+            else "paste" if name.startswith("paste_")
+            else "other"
+        )
+        item: dict = {
+            "name": name,
+            "display_name": display_name,
+            "items": count,
+            "type": type_label,
+        }
+        if kind and type_label == "paste":
+            item["kind"] = kind
+        out.append(item)
+    return out
+
+
+def _fallback_display_name(internal_name: str) -> str:
+    """For collections added before display_name was stored in metadata,
+    derive something readable by stripping the pdf_/paste_ prefix."""
+    for prefix in ("pdf_", "paste_"):
+        if internal_name.startswith(prefix):
+            return internal_name[len(prefix):]
+    return internal_name
+
+
+def delete_aede_collection(name: str) -> bool:
+    """Delete a single named collection. Returns True if it existed."""
+    if name == REQUEST_COLLECTION:
+        return False
+    client = get_chroma_client()
+    try:
+        client.delete_collection(name)
+        return True
+    except Exception:
+        return False
 
 
 def get_or_create_vectorstore(collection_name: Optional[str] = None):
-    """Get or create a Chroma collection. Defaults to the global collection."""
+    """Back-compat shim. The pipeline always reads from the request collection;
+    the argument is accepted and ignored."""
     client = get_chroma_client()
-    name = collection_name or settings.retrieval.collection_name
+    name = collection_name or REQUEST_COLLECTION
     return client.get_or_create_collection(
         name=name,
         metadata={"hnsw:space": "cosine"},
     )
 
 
-def collection_name_for(filename: str) -> str:
-    """Stable, sanitized collection name for a given PDF filename."""
-    stem = filename.rsplit("/", 1)[-1]
-    stem = stem.rsplit(".", 1)[0] if "." in stem else stem
-    return _sanitize_collection_name(f"pdf_{stem}")
-
-
-def list_collections() -> list[dict]:
-    """List all AEDE-managed PDF collections (excludes the default scratch one)."""
-    client = get_chroma_client()
-    out = []
-    for c in client.list_collections():
-        name = c.name
-        if not name.startswith("pdf_"):
-            continue
-        try:
-            count = c.count()
-        except Exception:
-            count = 0
-        out.append({"name": name, "embeddings": count})
-    return out
-
-
-def delete_collection(name: str) -> None:
-    client = get_chroma_client()
-    try:
-        client.delete_collection(name)
-    except Exception:
-        pass
-
-
 def focused_retriever(
     state: AEDEState,
     collection_name: Optional[str] = None,
 ) -> AEDEState:
-    """Node 1: Focused retrieval against a specific collection (if given).
-
-    The collection name is read from the explicit argument first, then from
-    state["collection_name"], then falls back to the default. The graph
-    doesn't pass an explicit kwarg, so state is the canonical channel.
-    """
+    """Node 1: Focused retrieval against the per-request Chroma collection."""
     query = state["query"]
     k = 4
 
-    cn = collection_name or state.get("collection_name")
-    collection = get_or_create_vectorstore(cn)
+    collection = get_or_create_vectorstore(collection_name)
 
     results = collection.query(
         query_texts=[query],
@@ -134,8 +214,7 @@ def retrieve_more(
         new_k = settings.retrieval.max_k
 
     query = state["query"]
-    cn = collection_name or state.get("collection_name")
-    collection = get_or_create_vectorstore(cn)
+    collection = get_or_create_vectorstore(collection_name)
     results = collection.query(
         query_texts=[query],
         n_results=new_k,
@@ -163,7 +242,8 @@ def add_documents(
     metadatas: Optional[list[dict]] = None,
     collection_name: Optional[str] = None,
 ) -> int:
-    """Add documents to a Chroma collection (per-PDF if collection_name given)."""
+    """Embed `documents` with sentence-transformers and write to the per-request
+    Chroma collection."""
     from sentence_transformers import SentenceTransformer
 
     collection = get_or_create_vectorstore(collection_name)
