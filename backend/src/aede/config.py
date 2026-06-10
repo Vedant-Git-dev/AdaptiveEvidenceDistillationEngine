@@ -37,7 +37,7 @@ class ModelConfig(BaseModel):
     pipeline_model: str = "llama-3.1-8b-instant"
 
     # Gemini model for final reasoner
-    gemini_reasoner_model: str = "gemini-2.5-flash"
+    gemini_reasoner_model: str = "gemini-3.1-flash-lite"
 
 
 class RetrievalConfig(BaseModel):
