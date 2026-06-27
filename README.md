@@ -19,6 +19,7 @@ Stop throwing tokens into the void. Start reasoning with intent.
 - Tested on annual reports, research papers, agent conversations, and chat histories
 - Adaptive routing with LangGraph
 - Multi-model reasoning pipeline
+- 90% answer quality retention evaluated by manual answer comparison against ground truth response across 50+ benchmark questions
 
 ## Performance Benchmarks
 
